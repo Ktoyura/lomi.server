@@ -125,18 +125,66 @@ app.post('/progress', authMiddleware, async (req, res) => {
   }
 });
 
-// Leaderboard
+// Leaderboard (accounts only — guests submit via /guest-score)
 app.get('/leaderboard', async (req, res) => {
   try {
     const top = await User.find({}, 'username points stats.totalWins stats.totalGames')
-      .sort({ points: -1 }).limit(20);
+      .sort({ points: -1 }).limit(50);
     res.json(top.map(u => ({
       username: u.username,
       points: u.points,
-      wins: u.stats.totalWins,
-      games: u.stats.totalGames,
+      wins: u.stats?.totalWins || 0,
+      games: u.stats?.totalGames || 0,
+      isGuest: false,
     })));
-  } catch {
+  } catch(e) {
+    res.status(500).json({ error: 'Ошибка' });
+  }
+});
+
+// Guest score submission (no auth, just name+points)
+const guestScores = {}; // in-memory: username -> {points, wins, games, updatedAt}
+
+app.post('/guest-score', (req, res) => {
+  try {
+    const { username, points, wins, games } = req.body;
+    if (!username || points === undefined) return res.status(400).json({ error: 'Bad data' });
+    guestScores[username] = { username, points, wins: wins||0, games: games||0, isGuest: true, updatedAt: Date.now() };
+    res.json({ ok: true });
+  } catch(e) {
+    res.status(500).json({ error: 'Ошибка' });
+  }
+});
+
+// Combined leaderboard (accounts + guests)
+app.get('/leaderboard/all', async (req, res) => {
+  try {
+    const accounts = await User.find({}, 'username points stats.totalWins stats.totalGames')
+      .sort({ points: -1 }).limit(100);
+
+    const accountList = accounts.map(u => ({
+      username: u.username,
+      points: u.points || 0,
+      wins: u.stats?.totalWins || 0,
+      games: u.stats?.totalGames || 0,
+      isGuest: false,
+    }));
+
+    // Clean stale guests (older than 24h)
+    const now = Date.now();
+    Object.keys(guestScores).forEach(k => {
+      if (now - guestScores[k].updatedAt > 86400000) delete guestScores[k];
+    });
+
+    const guestList = Object.values(guestScores);
+
+    // Merge and sort
+    const combined = [...accountList, ...guestList]
+      .sort((a, b) => b.points - a.points)
+      .slice(0, 50);
+
+    res.json(combined);
+  } catch(e) {
     res.status(500).json({ error: 'Ошибка' });
   }
 });
