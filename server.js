@@ -81,7 +81,8 @@ app.post('/auth/register', async (req, res) => {
     const token = jwt.sign({ id: user._id, username: user.username }, JWT_SECRET, { expiresIn: '30d' });
     res.json({ token, username: user.username, user: sanitize(user) });
   } catch (e) {
-    res.status(500).json({ error: 'Ошибка сервера' });
+    console.error('Register error:', e.message);
+    res.status(500).json({ error: 'Ошибка сервера: ' + e.message });
   }
 });
 
