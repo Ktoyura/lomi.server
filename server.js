@@ -32,7 +32,8 @@ mongoose.connect(MONGO_URI).then(() => console.log('MongoDB connected')).catch(e
 const userSchema = new mongoose.Schema({
   username: { type: String, required: true, unique: true, minlength: 2, maxlength: 16 },
   password: { type: String, required: true },
-  points:   { type: Number, default: 0 },
+  points:   { type: Number, default: 0 },  // рейтинговые очки
+  coins:    { type: Number, default: 0 },  // монеты для магазина
   stats: {
     totalGames: { type: Number, default: 0 },
     totalWins:  { type: Number, default: 0 },
@@ -115,9 +116,9 @@ app.get('/profile', authMiddleware, async (req, res) => {
 // Save progress
 app.post('/progress', authMiddleware, async (req, res) => {
   try {
-    const { points, stats, unlockedAch, equippedPiece, equippedWall, ownedItems } = req.body;
+    const { points, coins, stats, unlockedAch, equippedPiece, equippedWall, ownedItems } = req.body;
     await User.findByIdAndUpdate(req.user.id, {
-      $set: { points, stats, unlockedAch, equippedPiece, equippedWall, ownedItems }
+      $set: { points, coins, stats, unlockedAch, equippedPiece, equippedWall, ownedItems }
     });
     res.json({ ok: true });
   } catch {
@@ -192,7 +193,8 @@ app.get('/leaderboard/all', async (req, res) => {
 function sanitize(u) {
   return {
     username: u.username,
-    points: u.points,
+    points: u.points,   // рейтинг
+    coins: u.coins,     // монеты
     stats: u.stats,
     unlockedAch: u.unlockedAch,
     equippedPiece: u.equippedPiece,
