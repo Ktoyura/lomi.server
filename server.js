@@ -32,8 +32,10 @@ mongoose.connect(MONGO_URI).then(() => console.log('MongoDB connected')).catch(e
 const userSchema = new mongoose.Schema({
   username: { type: String, required: true, unique: true, minlength: 2, maxlength: 16 },
   password: { type: String, required: true },
-  points:   { type: Number, default: 0 },  // рейтинговые очки
-  coins:    { type: Number, default: 0 },  // монеты для магазина
+  secretQuestion: { type: String, default: '' },
+  secretAnswer:   { type: String, default: '' },
+  points:   { type: Number, default: 0 },
+  coins:    { type: Number, default: 0 },
   stats: {
     totalGames: { type: Number, default: 0 },
     totalWins:  { type: Number, default: 0 },
@@ -190,11 +192,50 @@ app.get('/leaderboard/all', async (req, res) => {
   }
 });
 
+// Set secret question (after registration)
+app.post('/auth/set-secret', authMiddleware, async (req, res) => {
+  try {
+    const { question, answer } = req.body;
+    if (!question || !answer) return res.status(400).json({ error: 'Заполни все поля' });
+    const hash = await bcrypt.hash(answer.toLowerCase().trim(), 10);
+    await User.findByIdAndUpdate(req.user.id, { secretQuestion: question, secretAnswer: hash });
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: 'Ошибка' }); }
+});
+
+// Get secret question by username
+app.post('/auth/get-question', async (req, res) => {
+  try {
+    const { username } = req.body;
+    const user = await User.findOne({ username: { $regex: new RegExp('^'+username+'$','i') } });
+    if (!user) return res.status(404).json({ error: 'Пользователь не найден' });
+    if (!user.secretQuestion) return res.status(400).json({ error: 'Секретный вопрос не задан' });
+    res.json({ question: user.secretQuestion });
+  } catch(e) { res.status(500).json({ error: 'Ошибка' }); }
+});
+
+// Reset password with secret answer
+app.post('/auth/reset-password', async (req, res) => {
+  try {
+    const { username, answer, newPassword } = req.body;
+    if (!answer || !newPassword) return res.status(400).json({ error: 'Заполни все поля' });
+    if (newPassword.length < 4) return res.status(400).json({ error: 'Пароль минимум 4 символа' });
+    const user = await User.findOne({ username: { $regex: new RegExp('^'+username+'$','i') } });
+    if (!user || !user.secretAnswer) return res.status(404).json({ error: 'Пользователь не найден' });
+    const match = await bcrypt.compare(answer.toLowerCase().trim(), user.secretAnswer);
+    if (!match) return res.status(401).json({ error: 'Неверный ответ' });
+    const hash = await bcrypt.hash(newPassword, 10);
+    await User.findByIdAndUpdate(user._id, { password: hash });
+    res.json({ ok: true });
+  } catch(e) { res.status(500).json({ error: 'Ошибка' }); }
+});
+
 function sanitize(u) {
   return {
     username: u.username,
-    points: u.points,   // рейтинг
-    coins: u.coins,     // монеты
+    points: u.points,
+    coins: u.coins,
+    hasSecretQuestion: !!u.secretQuestion,
     stats: u.stats,
     unlockedAch: u.unlockedAch,
     equippedPiece: u.equippedPiece,
