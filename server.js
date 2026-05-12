@@ -244,31 +244,98 @@ function sanitize(u) {
   };
 }
 
-// ── Socket.io rooms (same as before) ─────────────────────────────
+// ── Socket.io rooms ───────────────────────────────────────────────
 const rooms = {};
+let matchQueue = null; // один игрок в очереди
 
 function makeCode() { return Math.random().toString(36).substring(2,8).toUpperCase(); }
 function makeRoom(code) { return { code, players:[], started:false, createdAt:Date.now() }; }
 
 setInterval(()=>{ const now=Date.now(); for(const c in rooms) if(now-rooms[c].createdAt>3600000) delete rooms[c]; },600000);
 
+// Fake bot names for bot substitute
+const BOT_NAMES = ['Alex_Pro','GameMaster','QuoriBot','WallKing','StrategyX','NightOwl','FastMover'];
+
 io.on('connection', socket => {
-  socket.on('create_room', ({username}) => {
+
+  // ── MATCHMAKING ────────────────────────────────────────────────
+  socket.on('find_match', ({username, stats}) => {
+    socket.matchUsername = username;
+    socket.matchStats = stats || {};
+
+    if (matchQueue && matchQueue.id !== socket.id) {
+      // Found opponent!
+      const opponent = matchQueue;
+      matchQueue = null;
+
+      let code = makeCode(); while(rooms[code]) code = makeCode();
+      const room = makeRoom(code);
+      room.players.push({id: opponent.id, username: opponent.matchUsername, stats: opponent.matchStats, ready: false});
+      room.players.push({id: socket.id, username, stats: stats||{}, ready: false});
+      rooms[code] = room;
+
+      opponent.join(code); opponent.roomCode = code;
+      socket.join(code); socket.roomCode = code;
+
+      // Send match found with opponent stats
+      opponent.emit('match_found', {
+        code, playerIndex: 0,
+        opponentName: username,
+        opponentStats: stats || {}
+      });
+      socket.emit('match_found', {
+        code, playerIndex: 1,
+        opponentName: opponent.matchUsername,
+        opponentStats: opponent.matchStats || {}
+      });
+
+    } else {
+      // Add to queue
+      matchQueue = socket;
+      socket.emit('searching', {});
+
+      // Bot fallback after 20 seconds
+      socket._botTimeout = setTimeout(() => {
+        if (matchQueue && matchQueue.id === socket.id) {
+          matchQueue = null;
+          const botName = BOT_NAMES[Math.floor(Math.random()*BOT_NAMES.length)];
+          socket.emit('match_found', {
+            code: 'BOT',
+            playerIndex: 0,
+            opponentName: botName,
+            opponentStats: { points: Math.floor(Math.random()*500)+100, wins: Math.floor(Math.random()*50), games: Math.floor(Math.random()*100)+50 },
+            isBot: true
+          });
+        }
+      }, 20000);
+    }
+  });
+
+  socket.on('cancel_search', () => {
+    if (matchQueue && matchQueue.id === socket.id) matchQueue = null;
+    if (socket._botTimeout) { clearTimeout(socket._botTimeout); socket._botTimeout = null; }
+  });
+
+  // ── ROOMS (по коду) ───────────────────────────────────────────
+  socket.on('create_room', ({username, stats}) => {
     let code=makeCode(); while(rooms[code]) code=makeCode();
-    const room=makeRoom(code); room.players.push({id:socket.id,username,ready:false});
+    const room=makeRoom(code);
+    room.players.push({id:socket.id, username, stats:stats||{}, ready:false});
     rooms[code]=room; socket.join(code); socket.roomCode=code;
     socket.emit('room_created',{code,playerIndex:0});
   });
-  socket.on('join_room', ({code,username}) => {
+
+  socket.on('join_room', ({code, username, stats}) => {
     const room=rooms[code];
     if(!room) return socket.emit('error',{message:'Комната не найдена'});
     if(room.players.length>=2) return socket.emit('error',{message:'Комната полная'});
     if(room.started) return socket.emit('error',{message:'Игра уже началась'});
-    room.players.push({id:socket.id,username,ready:false});
+    room.players.push({id:socket.id, username, stats:stats||{}, ready:false});
     socket.join(code); socket.roomCode=code;
-    socket.emit('room_joined',{code,playerIndex:1,opponentName:room.players[0].username});
-    io.to(room.players[0].id).emit('opponent_joined',{opponentName:username});
+    socket.emit('room_joined',{code, playerIndex:1, opponentName:room.players[0].username, opponentStats:room.players[0].stats||{}});
+    io.to(room.players[0].id).emit('opponent_joined',{opponentName:username, opponentStats:stats||{}});
   });
+
   socket.on('player_ready', ()=>{
     const room=rooms[socket.roomCode]; if(!room) return;
     const p=room.players.find(p=>p.id===socket.id); if(p) p.ready=true;
@@ -277,6 +344,7 @@ io.on('connection', socket => {
       io.to(room.code).emit('game_start',{player0:room.players[0].username,player1:room.players[1].username});
     }
   });
+
   socket.on('move',({r,c})=>{ const room=rooms[socket.roomCode]; if(room) socket.to(room.code).emit('opponent_move',{r,c}); });
   socket.on('place_wall',({r,c,dir})=>{ const room=rooms[socket.roomCode]; if(room) socket.to(room.code).emit('opponent_wall',{r,c,dir}); });
   socket.on('surrender',()=>{ const room=rooms[socket.roomCode]; if(room) socket.to(room.code).emit('opponent_surrendered'); });
@@ -293,6 +361,8 @@ io.on('connection', socket => {
     io.to(room.code).emit('rematch_start',{player0:room.players[0].username,player1:room.players[1].username});
   });
   socket.on('disconnect',()=>{
+    if (matchQueue && matchQueue.id === socket.id) matchQueue = null;
+    if (socket._botTimeout) { clearTimeout(socket._botTimeout); socket._botTimeout = null; }
     const room=rooms[socket.roomCode]; if(!room) return;
     socket.to(room.code).emit('opponent_disconnected');
     delete rooms[socket.roomCode];
